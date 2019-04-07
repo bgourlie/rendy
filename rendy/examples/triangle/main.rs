@@ -24,6 +24,8 @@ use rendy::{
 
 use winit::{EventsLoop, WindowBuilder};
 
+use std::time::Duration;
+
 #[cfg(feature = "dx12")]
 type Backend = rendy::dx12::Backend;
 
@@ -57,10 +59,9 @@ struct TriangleRenderPipeline<B: gfx_hal::Backend> {
     vertex: Option<Buffer<B>>,
 }
 
-impl<B, T> SimpleGraphicsPipelineDesc<B, T> for TriangleRenderPipelineDesc
+impl<B> SimpleGraphicsPipelineDesc<B, Duration> for TriangleRenderPipelineDesc
 where
     B: gfx_hal::Backend,
-    T: ?Sized,
 {
     type Pipeline = TriangleRenderPipeline<B>;
 
@@ -82,7 +83,7 @@ where
         &self,
         storage: &'a mut Vec<B::ShaderModule>,
         factory: &mut Factory<B>,
-        _aux: &T,
+        _aux: &Duration,
     ) -> gfx_hal::pso::GraphicsShaderSet<'a, B> {
         storage.clear();
 
@@ -114,7 +115,7 @@ where
         _ctx: &mut GraphContext<B>,
         _factory: &mut Factory<B>,
         _queue: QueueId,
-        _aux: &T,
+        _aux: &Duration,
         buffers: Vec<NodeBuffer>,
         images: Vec<NodeImage>,
         set_layouts: &[DescriptorSetLayout<B>],
@@ -127,10 +128,9 @@ where
     }
 }
 
-impl<B, T> SimpleGraphicsPipeline<B, T> for TriangleRenderPipeline<B>
+impl<B> SimpleGraphicsPipeline<B, Duration> for TriangleRenderPipeline<B>
 where
     B: gfx_hal::Backend,
-    T: ?Sized,
 {
     type Desc = TriangleRenderPipelineDesc;
 
@@ -140,10 +140,10 @@ where
         _queue: QueueId,
         _set_layouts: &[DescriptorSetLayout<B>],
         _index: usize,
-        _aux: &T,
+        t: &Duration,
     ) -> PrepareResult {
         if self.vertex.is_none() {
-            let mut vbuf = factory
+            let vbuf = factory
                 .create_buffer(
                     512,
                     PosColor::VERTEX.stride as u64 * 3,
@@ -151,31 +151,31 @@ where
                 )
                 .unwrap();
 
-            unsafe {
-                // Fresh buffer.
-                factory
-                    .upload_visible_buffer(
-                        &mut vbuf,
-                        0,
-                        &[
-                            PosColor {
-                                position: [0.0, -0.5, 0.0].into(),
-                                color: [1.0, 0.0, 0.0, 1.0].into(),
-                            },
-                            PosColor {
-                                position: [0.5, 0.5, 0.0].into(),
-                                color: [0.0, 1.0, 0.0, 1.0].into(),
-                            },
-                            PosColor {
-                                position: [-0.5, 0.5, 0.0].into(),
-                                color: [0.0, 0.0, 1.0, 1.0].into(),
-                            },
-                        ],
-                    )
-                    .unwrap();
-            }
-
             self.vertex = Some(vbuf);
+        }
+        unsafe {
+            let t = t.as_millis() as u64;
+            // Fresh buffer.
+            factory
+                .upload_visible_buffer(
+                    self.vertex.as_mut().unwrap(),
+                    0,
+                    &[
+                        PosColor {
+                            position: [0.0, -0.5, 0.0].into(),
+                            color: [1.0, 0.0, 0.0, 1.0].into(),
+                        },
+                        PosColor {
+                            position: [0.5, 0.5, 0.0].into(),
+                            color: [0.0, 1.0, 0.0, 1.0].into(),
+                        },
+                        PosColor {
+                            position: [-0.5, 0.5, 0.0].into(),
+                            color: [0.0, 0.0, 1.0, 1.0].into(),
+                        },
+                    ],
+                )
+                .unwrap();
         }
 
         PrepareResult::DrawReuse
@@ -186,14 +186,14 @@ where
         _layout: &B::PipelineLayout,
         mut encoder: RenderPassEncoder<'_, B>,
         _index: usize,
-        _aux: &T,
+        _aux: &Duration,
     ) {
         let vbuf = self.vertex.as_ref().unwrap();
         encoder.bind_vertex_buffers(0, Some((vbuf.raw(), 0)));
         encoder.draw(0..3, 0..1);
     }
 
-    fn dispose(self, _factory: &mut Factory<B>, _aux: &T) {}
+    fn dispose(self, _factory: &mut Factory<B>, _aux: &Duration) {}
 }
 
 #[cfg(any(feature = "dx12", feature = "metal", feature = "vulkan"))]
@@ -201,7 +201,7 @@ fn run(
     event_loop: &mut EventsLoop,
     factory: &mut Factory<Backend>,
     families: &mut Families<Backend>,
-    mut graph: Graph<Backend, ()>,
+    mut graph: Graph<Backend, Duration>,
 ) -> Result<(), failure::Error> {
     let started = std::time::Instant::now();
 
@@ -209,14 +209,14 @@ fn run(
     let mut elapsed = started.elapsed();
 
     for _ in &mut frames {
-        factory.maintain(families);
-        event_loop.poll_events(|_| ());
-        graph.run(factory, families, &mut ());
-
         elapsed = started.elapsed();
-        if elapsed >= std::time::Duration::new(5, 0) {
+        if elapsed >= std::time::Duration::new(10, 0) {
             break;
         }
+
+        factory.maintain(families);
+        event_loop.poll_events(|_| ());
+        graph.run(factory, families, &mut elapsed);
     }
 
     let elapsed_ns = elapsed.as_secs() * 1_000_000_000 + elapsed.subsec_nanos() as u64;
@@ -228,7 +228,7 @@ fn run(
         frames.start * 1_000_000_000 / elapsed_ns
     );
 
-    graph.dispose(factory, &mut ());
+    graph.dispose(factory, &mut Duration::default());
     Ok(())
 }
 
@@ -254,7 +254,7 @@ fn main() {
 
     let surface = factory.create_surface(window.into());
 
-    let mut graph_builder = GraphBuilder::<Backend, ()>::new();
+    let mut graph_builder = GraphBuilder::<Backend, Duration>::new();
 
     let color = graph_builder.create_image(
         surface.kind(),
@@ -276,7 +276,7 @@ fn main() {
     graph_builder.add_node(PresentNode::builder(&factory, surface, color).with_dependency(pass));
 
     let graph = graph_builder
-        .build(&mut factory, &mut families, &mut ())
+        .build(&mut factory, &mut families, &mut Duration::default())
         .unwrap();
 
     run(&mut event_loop, &mut factory, &mut families, graph).unwrap();
